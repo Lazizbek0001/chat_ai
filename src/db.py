@@ -50,14 +50,12 @@ class Base(DeclarativeBase):
 
 
 class User(Base):
-    """A person who has logged in through Authentik. Authentik holds their password."""
+    """A person who uses the API. They log in with API keys (see src/auth.py)."""
 
     __tablename__ = "user"
 
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     email = Column(String(320), unique=True, index=True, nullable=False)
-    # The "sub" claim from Authentik: the stable id of this person there.
-    oidc_sub = Column(String(255), unique=True, nullable=True)
     # Left over from the old password login. Always empty for new users.
     hashed_password = Column(String(1024), nullable=False, default="")
     is_active = Column(Boolean, default=True, nullable=False)
@@ -88,6 +86,7 @@ async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 async def create_db_and_tables():
     # Imported here so every model is registered on Base before the tables are created.
     import src.models.chat  # noqa: F401
+    import src.models.task  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

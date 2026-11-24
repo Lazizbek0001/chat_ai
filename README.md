@@ -1,67 +1,62 @@
-# face_chat
+# face_chat — AI city
 
-An AI chat API. Users log in through **Authentik**, which is the only place passwords
-are kept. Every website you run logs in through the same Authentik, so one account works
-everywhere.
+An AI chat API with agents. You give an agent a task, it works in the background with
+its tools, and asks you before doing anything risky.
 
 ```
-            ┌──────────────┐   tokens   ┌──────────────────┐
- browser ──▶│  Authentik   │──────────▶ │ face_chat API    │  checks the token (JWKS)
-            │  :9000       │            │ :8000            │
-            │ login, 2FA,  │   login    ├──────────────────┤
-            │ users        │──────────▶ │ website A, B, …  │  "Log in with Authentik"
-            └──────────────┘            └──────────────────┘
+ you ──▶ POST /tasks ──▶ agent (ops) ──▶ model (Ollama cloud)
+                            │  ▲
+                   tool call│  │result
+                            ▼  │
+                          tools: check_website, current_time,
+                                 run_command (waits for your approval)
 ```
 
-## 1. Start Authentik (needs Docker)
-
-```bash
-cd authentik
-cp .env.example .env        # fill in the secrets (see comments in the file)
-docker compose up -d
-```
-
-Open http://localhost:9000/if/flow/initial-setup/ to set the admin password if you did not
-set `AUTHENTIK_BOOTSTRAP_PASSWORD`. The admin panel is at http://localhost:9000/if/admin/.
-
-`authentik/blueprints/face-chat.yaml` creates the **face_chat** and **Sample website**
-applications automatically. Add users under *Directory → Users*.
-
-## 2. Run the API
+## Run
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # set OLLAMA_API_KEY
-alembic upgrade head        # only for an existing database; a new one is created on start
+cp .env.example .env              # set OLLAMA_API_KEY
+alembic upgrade head              # only for an existing database; a new one is created on start
+python main.py create-user you@example.com   # prints your API key (valid 365 days)
 python main.py
 ```
 
-Open http://localhost:8000/docs, click **Authorize**, and log in with an Authentik user.
+Open http://localhost:8000/docs, click **Authorize** and paste the key. Every request
+sends it as `X-API-Key: <key>`. More keys: `POST /apikeys/generate`.
 
-The API never sees passwords. Each request carries an Authentik access token
-(`Authorization: Bearer …`), checked in `src/auth.py`. The first time someone calls the
-API, a local user is created for them. API keys (`/apikeys/generate`) still work for
-`/chat/*`.
-
-## 3. Run the sample website
-
-`examples/sample_site/` is a website that logs in through Authentik. Copy it into your sites.
+## Agents
 
 ```bash
-cd examples/sample_site
-pip install -r requirements.txt
-cp .env.example .env        # OIDC_CLIENT_SECRET = SAMPLE_SITE_CLIENT_SECRET from authentik/.env
-python app.py add-user alice    # optional: an "old" local account, to try linking
-uvicorn app:app --port 8001
+KEY=...    # from create-user
+
+# Give the ops agent a job
+curl -X POST localhost:8000/tasks -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"prompt": "Is https://conf.mtutoshkent.uz up? How fast?"}'
+
+curl localhost:8000/tasks/<id> -H "X-API-Key: $KEY"           # status, result, every step
+curl -X POST localhost:8000/tasks/<id>/approve -H "X-API-Key: $KEY"   # or /reject
 ```
 
-The first time someone logs in through Authentik, the site asks whether they already
-have an account there. They enter its old password once to link it, or create a new
-account. After that, Authentik is the only login.
+Task status: `queued` → `running` → `done` / `failed`, or `waiting_approval` when the
+agent wants a tool that needs your OK. `waiting_for` shows which tool and arguments.
 
-## Adding another website
+| Endpoint | |
+|---|---|
+| `GET /agents` | Agents and their tools |
+| `POST /tasks` | `{"prompt": "...", "agent": "ops", "model": null}` |
+| `GET /tasks`, `GET /tasks/{id}` | List, or one task with all steps |
+| `POST /tasks/{id}/approve`, `/reject` | Answer a waiting tool call |
 
-1. In `authentik/blueprints/face-chat.yaml`, copy the `sample-site` provider and
-   application entries, then change the name, `client_id`, redirect URL, and secret.
-2. In the website, use the code from `examples/sample_site/app.py` (`/auth/login`,
-   `/auth/callback`, `/link`, `/logout`).
+- **Add a tool:** an async function returning a string, plus a `Tool(...)` in
+  `src/agents/tools.py`. Use `needs_approval=True` for anything that changes something.
+- **Add an agent:** an `Agent(...)` in `src/agents/registry.py` with its prompt and tools.
+- **Shell access:** `ENABLE_SHELL_TOOL=true` gives the ops agent `run_command`. Each
+  command still waits for approval.
+
+Tasks run inside the API process. If the server restarts, running tasks are marked failed.
+
+## Chat
+
+The plain chat endpoints are unchanged: `/chat/new`, `/chat/list`, `/chat/{chat_id}`,
+`/chat/ai/models`.

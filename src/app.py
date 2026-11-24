@@ -4,13 +4,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.agents.routes import router as agents_router
+from src.agents.runner import fail_interrupted_tasks
 from src.ai_ollama import MODELS, ask_ai_cloud
-from src.auth import OIDC_CLIENT_ID, current_active_user
+from src.auth import current_active_user, validate_api_key
 from src.db import ApiKey, User, create_db_and_tables, get_async_session, hash_secret
 from src.logging_config import logger
 from src.models.chat import Chat, ChatMessage
@@ -19,17 +21,11 @@ from src.schemas import ChatRequest
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_db_and_tables()
+    await fail_interrupted_tasks()
     yield
 
-app = FastAPI(
-    lifespan=lifespan,
-    # The "Authorize" button on /docs logs in through Authentik with PKCE.
-    swagger_ui_init_oauth={
-        "clientId": OIDC_CLIENT_ID,
-        "usePkceWithAuthorizationCodeGrant": True,
-        "scopes": "openid email profile",
-    },
-)
+app = FastAPI(lifespan=lifespan)
+app.include_router(agents_router)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -45,7 +41,6 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# Registration, login, password reset and 2FA are handled by Authentik.
 @app.get("/users/me", tags=["users"])
 async def read_me(user: User = Depends(current_active_user)):
     return {
@@ -75,22 +70,6 @@ async def generate_api_key(
         "valid_until": new_key.valid_until.isoformat(),
     }
 
-
-async def validate_api_key(x_api_key: str = Header(None), db: AsyncSession = Depends(get_async_session)):
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="X-API-Key header missing.")
-
-    result = await db.execute(select(ApiKey).where(ApiKey.key_hash == hash_secret(x_api_key)))
-    api_key_record = result.scalars().first()
-
-    if not api_key_record:
-        raise HTTPException(status_code=401, detail="Unauthorized API Key.")
-        
-    # Check if the key has expired compared to the current UTC timestamp
-    if api_key_record.valid_until.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        raise HTTPException(status_code=403, detail="API Key has expired.")
-        
-    return api_key_record
 
 @app.get("/apikeys/list", tags=["API Keys"])
 async def get_apikeys(

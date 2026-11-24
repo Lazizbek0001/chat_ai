@@ -58,3 +58,25 @@ async def ask_ai_cloud(messages, model="gemma4:31b-cloud"):
         messages=messages,
     )
     return response["message"]["content"]
+
+
+# Agents need a model that is good at calling tools.
+AGENT_MODEL = os.getenv("AGENT_MODEL", "gpt-oss:120b-cloud")
+
+
+async def chat_with_tools(messages: list[dict], model: str, tools: list[dict]) -> dict:
+    """One model turn. Returns the assistant message as a plain dict (saved to the database)."""
+    response = await asyncio.to_thread(
+        client.chat,
+        model=model,
+        messages=messages,
+        tools=tools or None,
+    )
+    message = response.message
+    result = {"role": "assistant", "content": message.content or ""}
+    if message.tool_calls:
+        result["tool_calls"] = [
+            {"function": {"name": call.function.name, "arguments": dict(call.function.arguments or {})}}
+            for call in message.tool_calls
+        ]
+    return result
