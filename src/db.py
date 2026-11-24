@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import os
 import uuid
 from collections.abc import AsyncGenerator
@@ -18,6 +19,24 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
 def hash_secret(value: str) -> str:
     """API keys are stored only as this hash, so a database leak does not leak them."""
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def hash_password(password: str) -> str:
+    """Slow, salted hash (scrypt) for passwords. Stored as "scrypt$<salt>$<hash>"."""
+    salt = os.urandom(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
+    return f"scrypt${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str | None) -> bool:
+    try:
+        scheme, salt, expected = (stored or "").split("$")
+    except ValueError:
+        return False  # No password set, or an old hash format.
+    if scheme != "scrypt":
+        return False
+    digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1)
+    return hmac.compare_digest(digest.hex(), expected)
 
 
 class GUID(TypeDecorator):
@@ -50,13 +69,15 @@ class Base(DeclarativeBase):
 
 
 class User(Base):
-    """A person who uses the API. They log in with API keys (see src/auth.py)."""
+    """A person who uses the API. They log in with username (or email) + password or an API key
+    (see src/auth.py)."""
 
     __tablename__ = "user"
 
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
-    email = Column(String(320), unique=True, index=True, nullable=False)
-    # Left over from the old password login. Always empty for new users.
+    username = Column(String(150), unique=True, index=True, nullable=False)
+    email = Column(String(320), unique=True, index=True, nullable=True)
+    # scrypt hash (see hash_password). Empty means the user cannot log in with a password.
     hashed_password = Column(String(1024), nullable=False, default="")
     is_active = Column(Boolean, default=True, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False)
@@ -86,7 +107,6 @@ async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 async def create_db_and_tables():
     # Imported here so every model is registered on Base before the tables are created.
     import src.models.chat  # noqa: F401
-    import src.models.task  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

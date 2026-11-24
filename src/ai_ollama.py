@@ -1,82 +1,54 @@
 import os
-from ollama import Client
+from ollama import Client, ResponseError
+
+from src.ai_errors import AIError, provider_status
 from dotenv import load_dotenv
 import asyncio
 load_dotenv()
 
+# Shown only when the cloud model list cannot be fetched. The live list comes from
+# list_cloud_models(): Ollama retires cloud models, so a hard-coded list goes stale.
 MODELS = [
-    {
-        "id": "gpt-oss:120b-cloud",
-        "name": "GPT-OSS 120B",
-        "description": "Best reasoning",
-    },
-    {
-        "id": "glm-4.7:cloud",
-        "name": "GLM 4.7",
-        "description": "Reasoning & coding",
-    },
-    {
-        "id": "gemma4:31b-cloud",
-        "name": "Gemma 4 31B",
-        "description": "Best all-around",
-    },
-    {
-        "id": "gemma3:27b-cloud",
-        "name": "Gemma 3 27B",
-        "description": "Large model",
-    },
-    {
-        "id": "gpt-oss:20b-cloud",
-        "name": "GPT-OSS 20B",
-        "description": "Fast reasoning",
-    },
-    {
-        "id": "gemma3:12b-cloud",
-        "name": "Gemma 3 12B",
-        "description": "Balanced",
-    },
-    {
-        "id": "gemma3:4b-cloud",
-        "name": "Gemma 3 4B",
-        "description": "Fastest",
-    },
+    {"id": "gemma4:31b", "name": "gemma4:31b"},
 ]
 
+DEFAULT_MODEL = os.getenv("OLLAMA_DEFAULT_MODEL", "gemma4:31b")
+
+# Only chatting needs this key. The app (login, users, chat list) starts without it.
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
-if not OLLAMA_API_KEY:
-    raise RuntimeError("Set OLLAMA_API_KEY in .env.")
 
 client = Client(
     host="https://ollama.com",
-    headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"},
+    headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"} if OLLAMA_API_KEY else None,
 )
 
-async def ask_ai_cloud(messages, model="gemma4:31b-cloud"):
-    response = await asyncio.to_thread(
-        client.chat,
-        model=model,
-        messages=messages,
-    )
+def _cloud_model_name(model: str) -> str:
+    # "-cloud" / ":cloud" suffixes are only for a local Ollama that forwards to the cloud.
+    # https://ollama.com takes the plain name.
+    return model.removesuffix("-cloud").removesuffix(":cloud")
+
+
+async def ask_ai_cloud(messages, model=DEFAULT_MODEL):
+    if not OLLAMA_API_KEY:
+        raise AIError(503, "Set OLLAMA_API_KEY in .env to chat with the AI.")
+    try:
+        response = await asyncio.to_thread(
+            client.chat,
+            model=_cloud_model_name(model),
+            messages=messages,
+        )
+    except ResponseError as e:
+        # 401 bad key, 402/403 no credits, 404 unknown model, 410 retired model, 429 rate limit.
+        raise AIError(provider_status(e.status_code), f"Ollama Cloud: {e.error}") from e
+    except Exception as e:
+        raise AIError(503, "AI service is temporarily unavailable.") from e
     return response["message"]["content"]
 
 
-# Agents need a model that is good at calling tools.
-AGENT_MODEL = os.getenv("AGENT_MODEL", "gpt-oss:120b-cloud")
-
-
-async def chat_with_tools(messages: list[dict], model: str, tools: list[dict]) -> dict:
-    """One model turn. Returns the assistant message as a plain dict (saved to the database)."""
-    response = await asyncio.to_thread(
-        client.chat,
-        model=model,
-        messages=messages,
-        tools=tools or None,
-    )
-    message = response.message
-    result = {"role": "assistant", "content": message.content or ""}
-    if message.tool_calls:
-        result["tool_calls"] = [
-            {"function": {"name": call.function.name, "arguments": dict(call.function.arguments or {})}}
-            for call in message.tool_calls
-        ]
-    return result
+async def list_cloud_models() -> list[dict]:
+    """The models Ollama Cloud offers right now. Falls back to MODELS if it cannot be reached."""
+    try:
+        result = await asyncio.to_thread(client.list)
+    except Exception:
+        return MODELS
+    return [{"id": m.model, "name": m.model} for m in result.models]
