@@ -11,13 +11,13 @@ load_dotenv()
 # From https://console.groq.com/keys. Only needed to chat with Groq models.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "llama-3.3-70b-versatile")
+GROQ_DEFAULT_MODEL = os.getenv("GROQ_DEFAULT_MODEL", "openai/gpt-oss-120b")
 
 # Shown only when Groq's model list cannot be fetched.
 GROQ_MODELS = [
-    {"id": "llama-3.3-70b-versatile", "name": "llama-3.3-70b-versatile"},
-    {"id": "llama-3.1-8b-instant", "name": "llama-3.1-8b-instant"},
     {"id": "openai/gpt-oss-120b", "name": "openai/gpt-oss-120b"},
+    {"id": "openai/gpt-oss-20b", "name": "openai/gpt-oss-20b"},
+    {"id": "qwen/qwen3.8-27b", "name": "qwen/qwen3.8-27b"},
 ]
 
 # Not chat models: speech-to-text, text-to-speech and safety classifiers.
